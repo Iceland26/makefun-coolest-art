@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""coolest-art-01 entry: synthwave sunset w/ perspective neon grid, stdlib only."""
+"""coolest-art-01: a synthwave sunset rendered pixel-by-pixel, stdlib only.
+
+Composes a 640x640 PNG in memory and writes entry.png to $MAKEFUN_OUTPUT_DIR:
+  * vertical sky gradient (deep violet -> magenta -> orange horizon)
+  * faint deterministic stars in the upper sky
+  * a striped yellow sun with horizontal slit cutouts
+  * two dark mountain silhouettes flanking the sun
+  * a neon cyan/magenta perspective grid + sun reflection below the horizon
+"""
 import os, zlib, struct, math
 
 W = H = 640
@@ -22,14 +30,15 @@ def sd_circle(px, py, cx, cy, r):
 
 
 def sd_tri_up(px, py, cx, cy, halfw, h):
-    # vertices: apex (cx, cy-h), base-left (cx-halfw, cy), base-right (cx+halfw, cy)
-    p0 = (cx, cy - h)
-    p1 = (cx - halfw, cy)
-    p2 = (cx + halfw, cy)
+    """Signed distance to an upward triangle (apex at top)."""
+    p0 = (cx, cy - h)          # apex
+    p1 = (cx - halfw, cy)      # base-left
+    p2 = (cx + halfw, cy)      # base-right
     return sd_triangle(px, py, p0, p1, p2)
 
 
 def sd_triangle(px, py, p0, p1, p2):
+    """Signed distance to an arbitrary triangle."""
     ax, ay = p0
     bx, by = p1
     x2, y2 = p2
@@ -67,7 +76,7 @@ def cov(d):
 
 
 def glow(d, strength):
-    # neon glow falloff: 1 at line, decays gaussian-ish
+    # neon glow falloff: peaks at the line, gaussian-ish decay outward
     return strength * math.exp(-(d * d) / (2.0 * 2.2 * 2.2))
 
 
@@ -81,7 +90,7 @@ SUN_RIM = (1.00, 0.25, 0.45)
 MOUNTAIN = (0.10, 0.05, 0.20)
 GRID_DARK = (0.04, 0.02, 0.09)
 GRID_CYAN = (0.00, 0.90, 0.90)
-GRID_PINK = (1.00, 0.22, 0.58)
+GRID_PINK = (1.00, 0.32, 0.72)
 
 CX = W * 0.5
 YH = 400.0          # horizon
@@ -89,20 +98,26 @@ SUN_R = 88.0
 SUN_CY = YH - 40.0
 
 
-def render():
-    rows = []
-    # deterministic star positions (fixed pseudo-random)
-    stars = []
+def _stars():
+    """Deterministic star positions across the upper sky."""
+    out = []
     s = 12345
     for _ in range(120):
         s = (s * 1103515245 + 12345) & 0x7fffffff
-        stars.append(((s % W) / W, (s % 260) / 640.0))  # upper sky only
+        out.append(((s % W) / W, (s % 260) / 640.0))
+    return out
+
+
+def render():
+    rows = []
+    stars = _stars()
 
     for y in range(H):
         row = bytearray()
         fy = float(y)
         for x in range(W):
             fx = float(x)
+
             # ---- sky gradient ----
             t = clamp01(fy / YH)
             if t < 0.5:
@@ -111,7 +126,7 @@ def render():
                 sky = mix(SKY_MID, SKY_HOR, (t - 0.5) * 2.0)
             c = sky
 
-            # ---- stars (above horizon, subtle) ----
+            # ---- stars (well above the horizon, subtle) ----
             if fy < YH - 60:
                 for (sx, sy) in stars:
                     if abs(fx - sx * W) < 1.5 and abs(fy - sy * H) < 1.5:
@@ -120,12 +135,12 @@ def render():
             # ---- sun ----
             d = sd_circle(fx, fy, CX, SUN_CY, SUN_R)
             if d < SUN_R:
-                # gradient within sun
                 n = clamp01(d / SUN_R)
-                sc = mix(mix(SUN_CORE, SUN_MID, n * 1.6), SUN_RIM, smooth(0.25, 1.0, n))
+                sc = mix(mix(SUN_CORE, SUN_MID, n * 1.6), SUN_RIM,
+                         smooth(0.25, 1.0, n))
                 a = cov(d)
                 c = mix(c, sc, a)
-                # horizontal slits
+                # horizontal slit cutouts
                 l = (fy - SUN_CY)
                 slit = (abs(l) % 16.0) / 16.0
                 if 0.35 < slit < 0.62 and d < SUN_R - 1:
@@ -166,11 +181,15 @@ def render():
 
                 # sun reflection streak
                 rd = abs(fx - CX)
-                ref = glow(rd, 0.55) * math.exp(-dy / 220.0)
-                c = (c[0] + SUN_RIM[0] * ref, c[1] + SUN_RIM[1] * ref, c[2] + SUN_RIM[2] * ref)
+                ref = glow(rd, 0.70) * math.exp(-dy / 220.0)
+                c = (c[0] + SUN_RIM[0] * ref,
+                     c[1] + SUN_RIM[1] * ref,
+                     c[2] + SUN_RIM[2] * ref)
 
             c = (clamp01(c[0]), clamp01(c[1]), clamp01(c[2]))
-            row += bytes((int(c[0] * 255 + 0.5), int(c[1] * 255 + 0.5), int(c[2] * 255 + 0.5)))
+            row += bytes((int(c[0] * 255 + 0.5),
+                          int(c[1] * 255 + 0.5),
+                          int(c[2] * 255 + 0.5)))
         rows.append(bytes(row))
     return rows
 
@@ -179,6 +198,7 @@ def write_png(path, rows):
     def chunk(tag, data):
         return (struct.pack('>I', len(data)) + tag + data
                 + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff))
+
     raw = b''.join(b'\x00' + r for r in rows)
     ihdr = struct.pack('>IIBBBBB', W, H, 8, 2, 0, 0, 0)
     png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr)
